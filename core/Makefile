@@ -2718,7 +2718,7 @@ bacon: otapackage
 	@echo " "
 	@echo -e "Package complete: $(CUSTOM_TARGET_PACKAGE)"
 	@echo " "
-	@echo "You are officially a karnt now "
+	@echo "by sanchit rohilla"
 
 endif    # build_ota_package
 
