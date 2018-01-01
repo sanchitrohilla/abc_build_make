@@ -1,4 +1,5 @@
 # Copyright (C) 2012 The CyanogenMod Project
+#           (C) 2017 The LineageOS Project
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -27,6 +28,8 @@
 #   TARGET_KERNEL_SELINUX_CONFIG       = SELinux defconfig, optional
 #   TARGET_KERNEL_ADDITIONAL_CONFIG    = Additional defconfig, optional
 #   TARGET_KERNEL_ARCH                 = Kernel Arch
+#   TARGET_KERNEL_HEADER_ARCH          = Optional Arch for kernel headers if
+#                                          different from TARGET_KERNEL_ARCH
 #   TARGET_KERNEL_CROSS_COMPILE_PREFIX = Compiler prefix (e.g. arm-eabi-)
 #                                          defaults to arm-linux-androidkernel- for arm
 #                                                      aarch64-linux-androidkernel- for arm64
@@ -64,10 +67,9 @@
 #
 #   USE_CCACHE                         = Enable ccache (global Android flag)
 #
-#   NEED_KERNEL_MODULE_ROOT            = Optional, if true, install kernel
+#   NEED_KERNEL_MODULE_ROOT            =    optional
 #                                          modules in root instead of system
 
-ifneq ($(TARGET_NO_KERNEL),true)
 
 TARGET_AUTO_KDIR := $(shell echo $(TARGET_DEVICE_DIR) | sed -e 's/^device/kernel/g')
 
@@ -83,6 +85,7 @@ SELINUX_DEFCONFIG := $(TARGET_KERNEL_SELINUX_CONFIG)
 ## Internal variables
 KERNEL_OUT := $(TARGET_OUT_INTERMEDIATES)/KERNEL_OBJ
 KERNEL_CONFIG := $(KERNEL_OUT)/.config
+KERNEL_OUT_STAMP := $(KERNEL_OUT)/.mkdir_stamp
 
 TARGET_KERNEL_ARCH := $(strip $(TARGET_KERNEL_ARCH))
 ifeq ($(TARGET_KERNEL_ARCH),)
@@ -98,6 +101,18 @@ KERNEL_DEFCONFIG_ARCH := $(KERNEL_ARCH)
 endif
 KERNEL_DEFCONFIG_SRC := $(KERNEL_SRC)/arch/$(KERNEL_DEFCONFIG_ARCH)/configs/$(KERNEL_DEFCONFIG)
 
+TARGET_KERNEL_HEADER_ARCH := $(strip $(TARGET_KERNEL_HEADER_ARCH))
+ifeq ($(TARGET_KERNEL_HEADER_ARCH),)
+KERNEL_HEADER_ARCH := $(KERNEL_ARCH)
+else
+KERNEL_HEADER_ARCH := $(TARGET_KERNEL_HEADER_ARCH)
+endif
+
+KERNEL_HEADER_DEFCONFIG := $(strip $(KERNEL_HEADER_DEFCONFIG))
+ifeq ($(KERNEL_HEADER_DEFCONFIG),)
+KERNEL_HEADER_DEFCONFIG := $(KERNEL_DEFCONFIG)
+endif
+
 ifeq ($(BOARD_KERNEL_IMAGE_NAME),)
 $(error BOARD_KERNEL_IMAGE_NAME not defined.)
 endif
@@ -105,7 +120,7 @@ ifneq ($(TARGET_USES_UNCOMPRESSED_KERNEL),)
 $(error TARGET_USES_UNCOMPRESSED_KERNEL is deprecated.)
 endif
 ifneq ($(TARGET_KERNEL_APPEND_DTB),)
-$(error TARGET_KERNEL_APPEND_DTB is deprecated.)
+$(warning TARGET_KERNEL_APPEND_DTB is deprecated.)
 endif
 TARGET_PREBUILT_INT_KERNEL := $(KERNEL_OUT)/arch/$(KERNEL_ARCH)/boot/$(BOARD_KERNEL_IMAGE_NAME)
 
@@ -120,6 +135,9 @@ endif
 ifeq ($(KERNEL_ARCH),arm64)
   # Avoid "unsupported RELA relocation: 311" errors (R_AARCH64_ADR_GOT_PAGE)
   MAKE_FLAGS += CFLAGS_MODULE="-fno-pic"
+  ifeq ($(TARGET_ARCH),arm)
+    KERNEL_CONFIG_OVERRIDE := CONFIG_ANDROID_BINDER_IPC_32BIT=y
+  endif
 endif
 
 ifneq ($(TARGET_KERNEL_ADDITIONAL_CONFIG),)
@@ -161,7 +179,6 @@ ifeq "$(wildcard $(KERNEL_SRC) )" ""
         $(warning * THIS IS DEPRECATED, AND WILL BE DISCONTINUED                *)
         $(warning * Please configure your device to download the kernel         *)
         $(warning * source repository to $(KERNEL_SRC))
-        $(warning * See http://wiki.cyanogenmod.org/w/Doc:_integrated_kernel_building)
         $(warning * for more information                                        *)
         $(warning ***************************************************************)
         FULL_KERNEL_BUILD := false
@@ -199,8 +216,8 @@ endif
 
 ifeq ($(FULL_KERNEL_BUILD),true)
 
-KERNEL_HEADERS_INSTALL_DIR := $(KERNEL_OUT)/usr
-KERNEL_HEADERS_INSTALL_DEPS := $(KERNEL_OUT)/.headers_install_deps
+KERNEL_HEADERS_INSTALL := $(KERNEL_OUT)/usr
+KERNEL_HEADERS_INSTALL_STAMP := $(KERNEL_OUT)/.headers_install_stamp
 
 ifeq ($(NEED_KERNEL_MODULE_ROOT),true)
 KERNEL_MODULES_INSTALL := root
@@ -234,14 +251,9 @@ endif
 endif
 
 ifeq ($(TARGET_KERNEL_CLANG_COMPILE),true)
-    ifneq ($(TARGET_KERNEL_CLANG_VERSION),)
-        # Find the clang-* directory containing the specified version
-        KERNEL_CLANG_VERSION := $(shell find $(ANDROID_BUILD_TOP)/prebuilts/clang/host/$(HOST_OS)-x86/ -name AndroidVersion.txt -exec grep -l $(TARGET_KERNEL_CLANG_VERSION) "{}" \; | sed -e 's|/AndroidVersion.txt$$||g;s|^.*/||g')
-    else
-        # Only set the latest version of clang if TARGET_KERNEL_CLANG_VERSION hasn't been set by the device config
-        KERNEL_CLANG_VERSION := $(shell ls -d $(ANDROID_BUILD_TOP)/prebuilts/clang/host/$(HOST_OS)-x86/clang-* | xargs -n 1 basename | tail -1)
-    endif
-    TARGET_KERNEL_CLANG_PATH ?= $(ANDROID_BUILD_TOP)/prebuilts/clang/host/$(HOST_OS)-x86/$(KERNEL_CLANG_VERSION)/bin
+    # Only set the latest version of clang if TARGET_KERNEL_CLANG_VERSION hasn't been set by the device config
+    TARGET_KERNEL_CLANG_VERSION ?= $(shell ls -d $(ANDROID_BUILD_TOP)/prebuilts/clang/host/$(HOST_OS)-x86/clang-* | xargs -n 1 basename | tail -1)
+    TARGET_KERNEL_CLANG_PATH ?= $(ANDROID_BUILD_TOP)/prebuilts/clang/host/$(HOST_OS)-x86/$(TARGET_KERNEL_CLANG_VERSION)/bin
     ifeq ($(KERNEL_ARCH),arm64)
         KERNEL_CLANG_TRIPLE ?= CLANG_TRIPLE=aarch64-linux-gnu-
     else ifeq ($(KERNEL_ARCH),arm)
@@ -264,9 +276,7 @@ endif
 
 ifeq ($(TARGET_KERNEL_CLANG_COMPILE),true)
     KERNEL_CROSS_COMPILE := CROSS_COMPILE="$(KERNEL_TOOLCHAIN_PATH)"
-    ifeq ($(KERNEL_CC),)
-        KERNEL_CC := CC="$(ccache) $(TARGET_KERNEL_CLANG_PATH)/clang"
-    endif
+    KERNEL_CC ?= CC="$(ccache) $(TARGET_KERNEL_CLANG_PATH)/clang"
 else
     KERNEL_CROSS_COMPILE := CROSS_COMPILE="$(ccache) $(KERNEL_TOOLCHAIN_PATH)"
 endif
@@ -281,15 +291,21 @@ ifeq ($(TARGET_KERNEL_MODULES),)
     TARGET_KERNEL_MODULES := INSTALLED_KERNEL_MODULES
 endif
 
+$(KERNEL_OUT_STAMP):
+	$(hide) mkdir -p $(KERNEL_OUT)
+	$(hide) rm -rf $(KERNEL_MODULES_OUT)
+	$(hide) mkdir -p $(KERNEL_MODULES_OUT)
+	$(hide) rm -rf $(KERNEL_DEPMOD_STAGING_DIR)
+	$(hide) touch $@
+
 KERNEL_ADDITIONAL_CONFIG_OUT := $(KERNEL_OUT)/.additional_config
 
 .PHONY: force_additional_config
 $(KERNEL_ADDITIONAL_CONFIG_OUT): force_additional_config
 	$(hide) cmp -s $(KERNEL_ADDITIONAL_CONFIG_SRC) $@ || cp $(KERNEL_ADDITIONAL_CONFIG_SRC) $@;
 
-$(KERNEL_CONFIG): $(KERNEL_DEFCONFIG_SRC) $(KERNEL_ADDITIONAL_CONFIG_OUT)
-	@echo "Building Kernel Config"
-	$(hide) mkdir -p $(KERNEL_OUT)
+$(KERNEL_CONFIG): $(KERNEL_OUT_STAMP) $(KERNEL_DEFCONFIG_SRC) $(KERNEL_ADDITIONAL_CONFIG_OUT)
+	@echo -e ${CL_GRN}"Building Kernel Config"${CL_RST}
 	$(MAKE) $(MAKE_FLAGS) -C $(KERNEL_SRC) O=$(KERNEL_OUT) ARCH=$(KERNEL_ARCH) $(KERNEL_CROSS_COMPILE) $(KERNEL_CLANG_TRIPLE) $(KERNEL_CC) VARIANT_DEFCONFIG=$(VARIANT_DEFCONFIG) SELINUX_DEFCONFIG=$(SELINUX_DEFCONFIG) $(KERNEL_DEFCONFIG)
 	$(hide) if [ ! -z "$(KERNEL_CONFIG_OVERRIDE)" ]; then \
 			echo "Overriding kernel config with '$(KERNEL_CONFIG_OVERRIDE)'"; \
@@ -302,24 +318,20 @@ $(KERNEL_CONFIG): $(KERNEL_DEFCONFIG_SRC) $(KERNEL_ADDITIONAL_CONFIG_OUT)
 			$(KERNEL_SRC)/scripts/kconfig/merge_config.sh -m -O $(KERNEL_OUT) $(KERNEL_OUT)/.config $(KERNEL_SRC)/arch/$(KERNEL_ARCH)/configs/$(KERNEL_ADDITIONAL_CONFIG); \
 			$(MAKE) -C $(KERNEL_SRC) O=$(KERNEL_OUT) ARCH=$(KERNEL_ARCH) $(KERNEL_CROSS_COMPILE) $(KERNEL_CLANG_TRIPLE) $(KERNEL_CC) KCONFIG_ALLCONFIG=$(KERNEL_OUT)/.config alldefconfig; fi
 
-.PHONY: TARGET_KERNEL_BINARIES
-TARGET_KERNEL_BINARIES: $(KERNEL_CONFIG)
-	@echo "Building Kernel"
-	$(hide) rm -rf $(KERNEL_MODULES_OUT)
-	$(hide) mkdir -p $(KERNEL_MODULES_OUT)
-	$(hide) rm -rf $(KERNEL_DEPMOD_STAGING_DIR)
+TARGET_KERNEL_BINARIES: $(KERNEL_OUT_STAMP) $(KERNEL_CONFIG) $(KERNEL_HEADERS_INSTALL_STAMP)
+	@echo -e ${CL_GRN}"Building Kernel"${CL_RST}
 	$(MAKE) $(MAKE_FLAGS) -C $(KERNEL_SRC) O=$(KERNEL_OUT) ARCH=$(KERNEL_ARCH) $(KERNEL_CROSS_COMPILE) $(KERNEL_CLANG_TRIPLE) $(KERNEL_CC) $(BOARD_KERNEL_IMAGE_NAME)
 	$(hide) if grep -q '^CONFIG_OF=y' $(KERNEL_CONFIG); then \
-			echo "Building DTBs"; \
+			echo -e ${CL_GRN}"Building DTBs"${CL_RST} ; \
 			$(MAKE) $(MAKE_FLAGS) -C $(KERNEL_SRC) O=$(KERNEL_OUT) ARCH=$(KERNEL_ARCH) $(KERNEL_CROSS_COMPILE) $(KERNEL_CLANG_TRIPLE) $(KERNEL_CC) dtbs; \
 		fi
 	$(hide) if grep -q '^CONFIG_MODULES=y' $(KERNEL_CONFIG); then \
-			echo "Building Kernel Modules"; \
+			echo -e ${CL_GRN}"Building Kernel Modules"${CL_RST} ; \
 			$(MAKE) $(MAKE_FLAGS) -C $(KERNEL_SRC) O=$(KERNEL_OUT) ARCH=$(KERNEL_ARCH) $(KERNEL_CROSS_COMPILE) $(KERNEL_CLANG_TRIPLE) $(KERNEL_CC) modules; \
 		fi
 
 .PHONY: INSTALLED_KERNEL_MODULES
-INSTALLED_KERNEL_MODULES: depmod-host
+INSTALLED_KERNEL_MODULES: depmod
 	$(hide) if grep -q '^CONFIG_MODULES=y' $(KERNEL_CONFIG); then \
 			echo "Installing Kernel Modules"; \
 			$(MAKE) $(MAKE_FLAGS) -C $(KERNEL_SRC) O=$(KERNEL_OUT) ARCH=$(KERNEL_ARCH) $(KERNEL_CROSS_COMPILE) $(KERNEL_CLANG_TRIPLE) $(KERNEL_CC) INSTALL_MOD_PATH=../../$(KERNEL_MODULES_INSTALL) modules_install && \
@@ -331,7 +343,7 @@ INSTALLED_KERNEL_MODULES: depmod-host
 			done && \
 			rm -rf $$mpath && \
 			mkdir -p $(KERNEL_DEPMOD_STAGING_DIR)/lib/modules/0.0/$(KERNEL_MODULE_MOUNTPOINT)/lib/modules && \
-			find $(KERNEL_MODULES_OUT) -name *.ko -exec cp {} $(KERNEL_DEPMOD_STAGING_DIR)/lib/modules/0.0/$(KERNEL_MODULE_MOUNTPOINT)/lib/modules \; && \
+			cp $(KERNEL_MODULES_OUT)/*.ko $(KERNEL_DEPMOD_STAGING_DIR)/lib/modules/0.0/$(KERNEL_MODULE_MOUNTPOINT)/lib/modules && \
 			$(DEPMOD) -b $(KERNEL_DEPMOD_STAGING_DIR) 0.0 && \
 			sed -e 's/\(.*modules.*\):/\/\1:/g' -e 's/ \([^ ]*modules[^ ]*\)/ \/\1/g' $(KERNEL_DEPMOD_STAGING_DIR)/lib/modules/0.0/modules.dep > $(KERNEL_MODULES_OUT)/modules.dep; \
 		fi
@@ -340,64 +352,35 @@ $(TARGET_KERNEL_MODULES): TARGET_KERNEL_BINARIES
 
 $(TARGET_PREBUILT_INT_KERNEL): $(TARGET_KERNEL_MODULES)
 
-# Install kernel (uapi) headers.
-#
-# The dependency file serves two purposes:
-#  - It is a stamp indicating when the headers were last installed.
-#  - It contains a rule to regenerate itself when any kernel header
-#    files change.  This rule is identical to the rule emitted by
-#    GCC using the M/MM flags.
-#
-# Note that the location of installed kernel headers changed when the
-# kernel uapi system was introduced in 3.7.  Unfortunately, it is not
-# sufficient to test whether the uapi directories exist because some
-# kernels backport patches that contain uapi headers.  So we look for
-# the string "version_h" in the kernel makefile which was introduced
-# as a part of the uapi system (commit d183e6f570f3).
--include $(KERNEL_HEADERS_INSTALL_DEPS)
-$(KERNEL_HEADERS_INSTALL_DEPS):
-	@echo "Building Kernel Headers"
-	$(hide) mkdir -p $(KERNEL_OUT)
-	$(hide) rm -f $@
-	$(hide) $(MAKE) $(MAKE_FLAGS) -C $(KERNEL_SRC) O=$(KERNEL_OUT) ARCH=$(KERNEL_ARCH) $(KERNEL_CROSS_COMPILE) $(KERNEL_CLANG_TRIPLE) $(KERNEL_CC) headers_install
-	$(hide) echo "$@: \\" > $@
-	$(hide) ( cd $(KERNEL_SRC); \
-		if grep -q '^version_h' 'Makefile'; then \
-			depdirs="arch/$(KERNEL_ARCH)/include/uapi include/uapi"; \
-		else \
-			depdirs="arch/$(KERNEL_ARCH)/include/asm include"; \
-		fi; \
-		deps="Makefile $$(find $$depdirs -type f -name '*.h')"; \
-		for f in $$deps; do \
-			echo "  $(KERNEL_SRC)/$$f \\" >> $@; \
-		done ; \
-		echo "" >> $@ ; \
-		for f in $$deps; do \
-			echo "$(KERNEL_SRC)/$$f:" >> $@; \
-			echo "" >> $@; \
-		done \
-		)
+$(KERNEL_HEADERS_INSTALL_STAMP): $(KERNEL_OUT_STAMP) $(KERNEL_CONFIG)
+	@echo -e ${CL_GRN}"Building Kernel Headers"${CL_RST}
+	$(hide) if [ ! -z "$(KERNEL_HEADER_DEFCONFIG)" ]; then \
+			rm -f ../$(KERNEL_CONFIG); \
+			$(MAKE) $(MAKE_FLAGS) -C $(KERNEL_SRC) O=$(KERNEL_OUT) ARCH=$(KERNEL_HEADER_ARCH) $(KERNEL_CROSS_COMPILE) $(KERNEL_CLANG_TRIPLE) $(KERNEL_CC) VARIANT_DEFCONFIG=$(VARIANT_DEFCONFIG) SELINUX_DEFCONFIG=$(SELINUX_DEFCONFIG) $(KERNEL_HEADER_DEFCONFIG); \
+			$(MAKE) $(MAKE_FLAGS) -C $(KERNEL_SRC) O=$(KERNEL_OUT) ARCH=$(KERNEL_HEADER_ARCH) $(KERNEL_CROSS_COMPILE) $(KERNEL_CLANG_TRIPLE) $(KERNEL_CC) headers_install; fi
+	$(hide) if [ "$(KERNEL_HEADER_DEFCONFIG)" != "$(KERNEL_DEFCONFIG)" ]; then \
+			echo "Used a different defconfig for header generation"; \
+			rm -f ../$(KERNEL_CONFIG); \
+			$(MAKE) $(MAKE_FLAGS) -C $(KERNEL_SRC) O=$(KERNEL_OUT) ARCH=$(KERNEL_ARCH) $(KERNEL_CROSS_COMPILE) $(KERNEL_CLANG_TRIPLE) $(KERNEL_CC) VARIANT_DEFCONFIG=$(VARIANT_DEFCONFIG) SELINUX_DEFCONFIG=$(SELINUX_DEFCONFIG) $(KERNEL_DEFCONFIG); fi
+	$(hide) if [ ! -z "$(KERNEL_CONFIG_OVERRIDE)" ]; then \
+			echo "Overriding kernel config with '$(KERNEL_CONFIG_OVERRIDE)'"; \
+			echo $(KERNEL_CONFIG_OVERRIDE) >> $(KERNEL_OUT)/.config; \
+			$(MAKE) $(MAKE_FLAGS) -C $(KERNEL_SRC) O=$(KERNEL_OUT) ARCH=$(KERNEL_ARCH) $(KERNEL_CROSS_COMPILE) $(KERNEL_CLANG_TRIPLE) $(KERNEL_CC) oldconfig; fi
+	$(hide) if [ ! -z "$(KERNEL_ADDITIONAL_CONFIG)" ]; then \
+			echo "Using additional config '$(KERNEL_ADDITIONAL_CONFIG)'"; \
+			$(KERNEL_SRC)/scripts/kconfig/merge_config.sh -m -O $(KERNEL_OUT) $(KERNEL_OUT)/.config $(KERNEL_SRC)/arch/$(KERNEL_ARCH)/configs/$(KERNEL_ADDITIONAL_CONFIG); \
+			$(MAKE) $(MAKE_FLAGS) -C $(KERNEL_SRC) O=$(KERNEL_OUT) ARCH=$(KERNEL_ARCH) $(KERNEL_CROSS_COMPILE) $(KERNEL_CLANG_TRIPLE) $(KERNEL_CC) KCONFIG_ALLCONFIG=$(KERNEL_OUT)/.config alldefconfig; fi
+	$(hide) touch $@
 
-.PHONY: INSTALLED_KERNEL_HEADERS
-INSTALLED_KERNEL_HEADERS: $(KERNEL_HEADERS_INSTALL_DEPS)
+# provide this rule because there are dependencies on this throughout the repo
+$(KERNEL_HEADERS_INSTALL): $(KERNEL_HEADERS_INSTALL_STAMP)
 
-# Dependencies on $(KERNEL_OUT)/usr are deprecated
-$(KERNEL_HEADERS_INSTALL_DIR): $(KERNEL_HEADERS_INSTALL_DEPS)
-	@echo "Depending on $(KERNEL_HEADERS_INSTALL_DIR) is deprecated." 1>&2
-	@echo "Use INSTALLED_KERNEL_HEADERS instead." 1>&2
-	@exit 1
-
-.PHONY: kerneltags
-kerneltags: $(KERNEL_CONFIG)
-	$(hide) mkdir -p $(KERNEL_OUT)
+kerneltags: $(KERNEL_OUT_STAMP) $(KERNEL_CONFIG)
 	$(MAKE) -C $(KERNEL_SRC) O=$(KERNEL_OUT) ARCH=$(KERNEL_ARCH) $(KERNEL_CROSS_COMPILE) $(KERNEL_CLANG_TRIPLE) $(KERNEL_CC) tags
-
-.PHONY: kernelconfig kernelxconfig kernelsavedefconfig alldefconfig
 
 kernelconfig:  KERNELCONFIG_MODE := menuconfig
 kernelxconfig: KERNELCONFIG_MODE := xconfig
-kernelxconfig kernelconfig:
-	$(hide) mkdir -p $(KERNEL_OUT)
+kernelxconfig kernelconfig: $(KERNEL_OUT_STAMP)
 	$(MAKE) $(MAKE_FLAGS) -C $(KERNEL_SRC) O=$(KERNEL_OUT) ARCH=$(KERNEL_ARCH) $(KERNEL_CROSS_COMPILE) $(KERNEL_CLANG_TRIPLE) $(KERNEL_CC) $(KERNEL_DEFCONFIG)
 	env KCONFIG_NOTIMESTAMP=true \
 		 $(MAKE) -C $(KERNEL_SRC) O=$(KERNEL_OUT) ARCH=$(KERNEL_ARCH) $(KERNEL_CROSS_COMPILE) $(KERNEL_CLANG_TRIPLE) $(KERNEL_CC) $(KERNELCONFIG_MODE)
@@ -405,21 +388,18 @@ kernelxconfig kernelconfig:
 		 $(MAKE) -C $(KERNEL_SRC) O=$(KERNEL_OUT) ARCH=$(KERNEL_ARCH) $(KERNEL_CROSS_COMPILE) $(KERNEL_CLANG_TRIPLE) $(KERNEL_CC) savedefconfig
 	cp $(KERNEL_OUT)/defconfig $(KERNEL_DEFCONFIG_SRC)
 
-kernelsavedefconfig:
-	$(hide) mkdir -p $(KERNEL_OUT)
+kernelsavedefconfig: $(KERNEL_OUT_STAMP)
 	$(MAKE) $(MAKE_FLAGS) -C $(KERNEL_SRC) O=$(KERNEL_OUT) ARCH=$(KERNEL_ARCH) $(KERNEL_CROSS_COMPILE) $(KERNEL_CLANG_TRIPLE) $(KERNEL_CC) $(KERNEL_DEFCONFIG)
 	env KCONFIG_NOTIMESTAMP=true \
 		 $(MAKE) -C $(KERNEL_SRC) O=$(KERNEL_OUT) ARCH=$(KERNEL_ARCH) $(KERNEL_CROSS_COMPILE) $(KERNEL_CLANG_TRIPLE) $(KERNEL_CC) savedefconfig
 	cp $(KERNEL_OUT)/defconfig $(KERNEL_DEFCONFIG_SRC)
 
-alldefconfig:
-	$(hide) mkdir -p $(KERNEL_OUT)
+alldefconfig: $(KERNEL_OUT_STAMP)
 	env KCONFIG_NOTIMESTAMP=true \
 		 $(MAKE) -C $(KERNEL_SRC) O=$(KERNEL_OUT) ARCH=$(KERNEL_ARCH) $(KERNEL_CROSS_COMPILE) $(KERNEL_CLANG_TRIPLE) $(KERNEL_CC) alldefconfig
 
-endif # FULL_KERNEL_BUILD
-
 TARGET_PREBUILT_DTBO = $(PRODUCT_OUT)/dtbo/arch/$(KERNEL_ARCH)/boot/dtbo.img
+ifeq ($(BOARD_AVB_ENABLE),true)
 $(TARGET_PREBUILT_DTBO): $(AVBTOOL)
 	echo -e ${CL_GRN}"Building DTBO.img"${CL_RST}
 	$(MAKE) $(MAKE_FLAGS) -C $(KERNEL_SRC) O=$(PRODUCT_OUT)/dtbo ARCH=$(KERNEL_ARCH) $(KERNEL_CROSS_COMPILE) $(KERNEL_CLANG_TRIPLE) $(KERNEL_CC) $(KERNEL_DEFCONFIG)
@@ -429,6 +409,13 @@ $(TARGET_PREBUILT_DTBO): $(AVBTOOL)
 		--partition_size $(BOARD_DTBOIMG_PARTITION_SIZE) \
 		--partition_name dtbo $(INTERNAL_AVB_DTBO_SIGNING_ARGS) \
 		$(BOARD_AVB_DTBO_ADD_HASH_FOOTER_ARGS)
+else
+$(TARGET_PREBUILT_DTBO):
+	echo -e ${CL_GRN}"Building DTBO.img"${CL_RST}
+	$(MAKE) $(MAKE_FLAGS) -C $(KERNEL_SRC) O=$(PRODUCT_OUT)/dtbo ARCH=$(KERNEL_ARCH) $(KERNEL_CROSS_COMPILE) $(KERNEL_CLANG_TRIPLE) $(KERNEL_CC) $(KERNEL_DEFCONFIG)
+	$(MAKE) $(MAKE_FLAGS) -C $(KERNEL_SRC) O=$(PRODUCT_OUT)/dtbo ARCH=$(KERNEL_ARCH) $(KERNEL_CROSS_COMPILE) $(KERNEL_CLANG_TRIPLE) $(KERNEL_CC) dtbo.img
+endif #BOARD_AVB_ENABLE
+endif # FULL_KERNEL_BUILD
 
 ## Install it
 
@@ -455,5 +442,3 @@ kernel: $(INSTALLED_KERNEL_TARGET)
 
 .PHONY: dtbo
 dtbo: $(INSTALLED_DTBOIMAGE_TARGET)
-
-endif # TARGET_NO_KERNEL
