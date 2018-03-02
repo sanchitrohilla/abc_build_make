@@ -966,4 +966,4 @@ $(eval include vendor/nexus/sepolicy/sepolicy.mk)
 endif
 
 include $(BUILD_SYSTEM)/dumpvar.mk
--include $(TOPDIR)vendor/build/core/qcom_target.mk
+-include $(TOPDIR)vendor/cardinal/build/core/qcom_target.mk
